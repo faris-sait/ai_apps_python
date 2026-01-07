@@ -4,3 +4,10 @@ node_modules/
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+models/
+nul
+*.pth
+*.pt
+*.onnx
+*.pkl
+backend/gfpgan/

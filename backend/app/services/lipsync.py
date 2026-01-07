@@ -22,6 +22,9 @@ logger = logging.getLogger(__name__)
 # Wav2Lip model directory (relative to backend)
 WAV2LIP_DIR = Path(__file__).parent.parent.parent / "models" / "wav2lip"
 
+# SadTalker directory (relative to project root)
+SADTALKER_DIR = Path(__file__).parent.parent.parent.parent / "models" / "sadtalker"
+
 
 @dataclass
 class LipSyncStatus:
@@ -529,7 +532,54 @@ class Wav2LipProcessor:
 class SadTalkerProcessor:
     """
     SadTalker implementation for talking face generation.
+    Uses the SadTalker library for audio-driven talking head generation.
     """
+
+    def __init__(self) -> None:
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.preprocess_model = None
+        self.audio_to_coeff = None
+        self.animate_from_coeff = None
+        self.sadtalker_paths = None
+        self._initialized = False
+        logger.info(f"SadTalker using device: {self.device}")
+
+    def _init_models(self, size: int = 256) -> None:
+        """Initialize SadTalker models"""
+        if self._initialized:
+            return
+
+        sadtalker_path = str(SADTALKER_DIR)
+        if sadtalker_path not in sys.path:
+            sys.path.insert(0, sadtalker_path)
+
+        from src.utils.preprocess import CropAndExtract
+        from src.test_audio2coeff import Audio2Coeff
+        from src.facerender.animate import AnimateFromCoeff
+        from src.utils.init_path import init_path
+
+        checkpoint_dir = SADTALKER_DIR / "checkpoints"
+        config_dir = SADTALKER_DIR / "src" / "config"
+
+        self.sadtalker_paths = init_path(
+            str(checkpoint_dir),
+            str(config_dir),
+            size,
+            False,  # old_version
+            "crop"  # preprocess
+        )
+
+        logger.info("Loading SadTalker preprocess model...")
+        self.preprocess_model = CropAndExtract(self.sadtalker_paths, self.device)
+
+        logger.info("Loading SadTalker audio to coeff model...")
+        self.audio_to_coeff = Audio2Coeff(self.sadtalker_paths, self.device)
+
+        logger.info("Loading SadTalker animation model...")
+        self.animate_from_coeff = AnimateFromCoeff(self.sadtalker_paths, self.device)
+
+        self._initialized = True
+        logger.info("SadTalker models initialized successfully")
 
     def process(
         self,
@@ -539,12 +589,122 @@ class SadTalkerProcessor:
         config: LipSyncConfig
     ) -> bool:
         """
-        Generate talking face video from image and audio.
+        Generate talking face video from image and audio using SadTalker.
 
-        This is a placeholder - implement actual SadTalker inference here.
+        Args:
+            image_path: Path to source image
+            audio_path: Path to audio file
+            output_path: Path for output video
+            config: LipSync configuration
+
+        Returns:
+            True if successful
         """
-        logger.info(f"Processing with SadTalker: {image_path} + {audio_path}")
-        raise NotImplementedError("SadTalker processor not yet implemented")
+        import shutil
+        from time import strftime
+
+        sadtalker_path = str(SADTALKER_DIR)
+        if sadtalker_path not in sys.path:
+            sys.path.insert(0, sadtalker_path)
+
+        from src.generate_batch import get_data
+        from src.generate_facerender_batch import get_facerender_data
+
+        try:
+            logger.info(f"Processing with SadTalker: {image_path} + {audio_path}")
+
+            # Get size from config (256 or 512)
+            size = 512 if config.quality == "high" else 256
+
+            # Initialize models if needed
+            self._init_models(size)
+
+            # Create save directory
+            save_dir = Path(output_path).parent / f"sadtalker_{strftime('%Y_%m_%d_%H.%M.%S')}"
+            save_dir.mkdir(parents=True, exist_ok=True)
+
+            # Extract 3DMM from source image
+            first_frame_dir = save_dir / "first_frame_dir"
+            first_frame_dir.mkdir(exist_ok=True)
+
+            logger.info("Extracting 3DMM from source image...")
+            first_coeff_path, crop_pic_path, crop_info = self.preprocess_model.generate(
+                str(image_path),
+                str(first_frame_dir),
+                "crop",  # preprocess mode
+                source_image_flag=True,
+                pic_size=size
+            )
+
+            if first_coeff_path is None:
+                raise ValueError("Could not extract face coefficients from source image")
+
+            # Audio to coefficients
+            logger.info("Converting audio to coefficients...")
+            batch = get_data(
+                first_coeff_path,
+                str(audio_path),
+                self.device,
+                ref_eyeblink_coeff_path=None,
+                still=True  # Still mode for single image
+            )
+
+            coeff_path = self.audio_to_coeff.generate(
+                batch,
+                str(save_dir),
+                pose_style=0,
+                ref_pose_coeff_path=None
+            )
+
+            # Generate animation
+            logger.info("Generating animation...")
+            data = get_facerender_data(
+                coeff_path,
+                crop_pic_path,
+                first_coeff_path,
+                str(audio_path),
+                batch_size=2,
+                input_yaw_list=None,
+                input_pitch_list=None,
+                input_roll_list=None,
+                expression_scale=1.0,
+                still_mode=True,
+                preprocess="crop",
+                size=size
+            )
+
+            # Use enhancer if high quality is requested
+            enhancer = "gfpgan" if config.quality == "high" else None
+
+            result = self.animate_from_coeff.generate(
+                data,
+                str(save_dir),
+                str(image_path),
+                crop_info,
+                enhancer=enhancer,
+                background_enhancer=None,
+                preprocess="crop",
+                img_size=size
+            )
+
+            # Move result to output path
+            if result and Path(result).exists():
+                shutil.move(result, output_path)
+                logger.info(f"Successfully generated: {output_path}")
+
+                # Cleanup temp directory
+                try:
+                    shutil.rmtree(save_dir)
+                except Exception:
+                    pass
+
+                return True
+            else:
+                raise RuntimeError("SadTalker did not produce output")
+
+        except Exception as e:
+            logger.exception(f"SadTalker processing failed: {e}")
+            raise
 
 
 class VideoReTalkingProcessor:
@@ -625,12 +785,21 @@ class LipSyncService:
             jobs[job_id].progress = 0.3
 
             # Process the lip sync
-            success = processor.process(
-                video_path=video_path,
-                audio_path=audio_path,
-                output_path=str(output_path),
-                config=lipsync_config
-            )
+            # SadTalker uses image_path instead of video_path
+            if config.model == "sadtalker":
+                success = processor.process(
+                    image_path=video_path,
+                    audio_path=audio_path,
+                    output_path=str(output_path),
+                    config=lipsync_config
+                )
+            else:
+                success = processor.process(
+                    video_path=video_path,
+                    audio_path=audio_path,
+                    output_path=str(output_path),
+                    config=lipsync_config
+                )
 
             if success:
                 jobs[job_id].status = "completed"

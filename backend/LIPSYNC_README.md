@@ -1,4 +1,4 @@
-WavW# Lip Sync API
+WavWnow try the # Lip Sync API
 
 This FastAPI backend provides endpoints for generating lip-synced videos using open-source libraries.
 
