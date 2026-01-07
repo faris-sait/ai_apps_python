@@ -94,6 +94,12 @@ class Settings(BaseSettings):
     FIRST_SUPERUSER: EmailStr
     FIRST_SUPERUSER_PASSWORD: str
 
+    # Lip Sync Settings
+    UPLOAD_DIR: str = "./uploads"
+    LIPSYNC_MODEL_DIR: str = "./models"
+    LIPSYNC_DEFAULT_MODEL: str = "wav2lip"
+    MAX_UPLOAD_SIZE_MB: int = 100
+
     def _check_default_secret(self, var_name: str, value: str | None) -> None:
         if value == "changethis":
             message = (

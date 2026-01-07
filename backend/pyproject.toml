@@ -21,6 +21,12 @@ dependencies = [
     "pydantic-settings<3.0.0,>=2.2.1",
     "sentry-sdk[fastapi]<2.0.0,>=1.40.6",
     "pyjwt<3.0.0,>=2.8.0",
+    # Lip sync dependencies
+    "numpy>=1.24.0",
+    "opencv-python>=4.8.0",
+    "librosa>=0.10.0",
+    "scipy>=1.11.0",
+    "aiofiles>=23.0.0",
 ]
 
 [tool.uv]
