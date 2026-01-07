@@ -90,7 +90,8 @@ def test_full_pipeline(video_path: str, audio_path: str):
     config = LipSyncConfig(
         model="wav2lip",
         quality="medium",
-        resize_factor=2  # Reduce resolution for faster testing
+        resize_factor=4,  # Reduce resolution for faster testing (1080p -> 270p)
+        wav2lip_batch_size=8  # Smaller batch for CPU
     )
 
     try:

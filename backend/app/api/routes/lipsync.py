@@ -51,15 +51,17 @@ async def generate_lipsync(
     audio: Annotated[UploadFile, File(description="Audio file for lip sync")],
     model: Annotated[str, Form()] = "wav2lip",
     quality: Annotated[str, Form()] = "medium",
+    resize_factor: Annotated[int, Form()] = 2,
 ) -> LipSyncJobResponse:
     """
     Generate lip-synced video from source video/image and audio.
-    
+
     - **video**: Source video or image file (mp4, avi, jpg, png)
     - **audio**: Audio file to sync lips to (wav, mp3)
     - **model**: Lip sync model to use (wav2lip, sadtalker, video_retalking)
     - **quality**: Output quality (low, medium, high)
-    
+    - **resize_factor**: Reduce resolution by this factor (1=original, 2=half, 4=quarter). Use 2-4 for large videos.
+
     Returns a job ID to track the processing status.
     """
     # Validate file types
@@ -103,7 +105,7 @@ async def generate_lipsync(
     )
     
     # Start background processing
-    config = LipSyncConfig(model=model, quality=quality)
+    config = LipSyncConfig(model=model, quality=quality, resize_factor=resize_factor)
     background_tasks.add_task(
         LipSyncService.process_lipsync,
         job_id=job_id,
