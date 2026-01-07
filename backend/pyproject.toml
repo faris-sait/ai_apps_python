@@ -27,6 +27,10 @@ dependencies = [
     "librosa>=0.10.0",
     "scipy>=1.11.0",
     "aiofiles>=23.0.0",
+    "torch>=2.0.0",
+    "torchvision>=0.15.0",
+    "torchaudio>=2.0.0",
+    "face-alignment>=1.4.0",
 ]
 
 [tool.uv]

@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl:*)",
+      "Bash(pip install:*)",
+      "Bash(python -m gdown:*)",
+      "Bash(ffmpeg:*)",
+      "Bash(uv sync:*)",
+      "Bash(python:*)"
+    ]
+  }
+}

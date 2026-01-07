@@ -6,11 +6,21 @@ It provides an abstraction layer for different lip sync libraries.
 """
 
 import logging
+import subprocess
+import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+import cv2
+import numpy as np
+import torch
+
 logger = logging.getLogger(__name__)
+
+# Wav2Lip model directory (relative to backend)
+WAV2LIP_DIR = Path(__file__).parent.parent.parent / "models" / "wav2lip"
 
 
 @dataclass
@@ -30,12 +40,16 @@ class LipSyncConfig:
     quality: str = "medium"
     fps: int = 25
     resize_factor: int = 1
+    pads: list[int] = field(default_factory=lambda: [0, 10, 0, 0])
+    face_det_batch_size: int = 16
+    wav2lip_batch_size: int = 128
+    nosmooth: bool = False
     extra_options: dict[str, Any] = field(default_factory=dict)
 
 
 class LipSyncModel(Protocol):
     """Protocol for lip sync model implementations"""
-    
+
     def process(
         self,
         video_path: str,
@@ -47,29 +61,337 @@ class LipSyncModel(Protocol):
         ...
 
 
+class AudioProcessor:
+    """Audio processing for Wav2Lip using librosa"""
+
+    # Hyperparameters matching Wav2Lip
+    num_mels = 80
+    n_fft = 800
+    hop_size = 200
+    win_size = 800
+    sample_rate = 16000
+    preemphasis = 0.97
+    preemphasize = True
+    signal_normalization = True
+    allow_clipping_in_normalization = True
+    symmetric_mels = True
+    max_abs_value = 4.0
+    min_level_db = -100
+    ref_level_db = 20
+    fmin = 55
+    fmax = 7600
+
+    _mel_basis = None
+
+    @classmethod
+    def load_wav(cls, path: str) -> np.ndarray:
+        """Load audio file and convert to 16kHz"""
+        import librosa
+        wav, _ = librosa.load(path, sr=cls.sample_rate)
+        return wav
+
+    @classmethod
+    def _preemphasis(cls, wav: np.ndarray) -> np.ndarray:
+        """Apply pre-emphasis filter"""
+        from scipy import signal
+        if cls.preemphasize:
+            return signal.lfilter([1, -cls.preemphasis], [1], wav)
+        return wav
+
+    @classmethod
+    def _stft(cls, y: np.ndarray) -> np.ndarray:
+        """Compute Short-Time Fourier Transform"""
+        import librosa
+        return librosa.stft(
+            y=y,
+            n_fft=cls.n_fft,
+            hop_length=cls.hop_size,
+            win_length=cls.win_size
+        )
+
+    @classmethod
+    def _build_mel_basis(cls) -> np.ndarray:
+        """Build mel filterbank"""
+        import librosa
+        return librosa.filters.mel(
+            sr=cls.sample_rate,
+            n_fft=cls.n_fft,
+            n_mels=cls.num_mels,
+            fmin=cls.fmin,
+            fmax=cls.fmax
+        )
+
+    @classmethod
+    def _linear_to_mel(cls, spectrogram: np.ndarray) -> np.ndarray:
+        """Convert linear spectrogram to mel spectrogram"""
+        if cls._mel_basis is None:
+            cls._mel_basis = cls._build_mel_basis()
+        return np.dot(cls._mel_basis, spectrogram)
+
+    @classmethod
+    def _amp_to_db(cls, x: np.ndarray) -> np.ndarray:
+        """Convert amplitude to decibels"""
+        min_level = np.exp(cls.min_level_db / 20 * np.log(10))
+        return 20 * np.log10(np.maximum(min_level, x))
+
+    @classmethod
+    def _normalize(cls, S: np.ndarray) -> np.ndarray:
+        """Normalize spectrogram"""
+        if cls.allow_clipping_in_normalization:
+            if cls.symmetric_mels:
+                return np.clip(
+                    (2 * cls.max_abs_value) * ((S - cls.min_level_db) / (-cls.min_level_db)) - cls.max_abs_value,
+                    -cls.max_abs_value,
+                    cls.max_abs_value
+                )
+            else:
+                return np.clip(
+                    cls.max_abs_value * ((S - cls.min_level_db) / (-cls.min_level_db)),
+                    0,
+                    cls.max_abs_value
+                )
+        if cls.symmetric_mels:
+            return (2 * cls.max_abs_value) * ((S - cls.min_level_db) / (-cls.min_level_db)) - cls.max_abs_value
+        return cls.max_abs_value * ((S - cls.min_level_db) / (-cls.min_level_db))
+
+    @classmethod
+    def melspectrogram(cls, wav: np.ndarray) -> np.ndarray:
+        """Compute mel spectrogram from waveform"""
+        D = cls._stft(cls._preemphasis(wav))
+        S = cls._amp_to_db(cls._linear_to_mel(np.abs(D))) - cls.ref_level_db
+        if cls.signal_normalization:
+            return cls._normalize(S)
+        return S
+
+
 class Wav2LipProcessor:
     """
     Wav2Lip implementation for lip sync.
-    
-    To use this, you need to:
-    1. Clone Wav2Lip repo: git clone https://github.com/Rudrabha/Wav2Lip
-    2. Download pretrained models
-    3. Install dependencies: pip install -r requirements.txt
     """
-    
+
+    mel_step_size = 16
+    img_size = 96
+
     def __init__(self) -> None:
-        self.model_path: str | None = None
-        self.device = "cuda"  # or "cpu"
-    
-    def load_model(self, model_path: str) -> None:
-        """Load the Wav2Lip model weights"""
-        self.model_path = model_path
-        # TODO: Implement actual model loading
-        # from wav2lip import Wav2Lip
-        # self.model = Wav2Lip()
-        # self.model.load_state_dict(torch.load(model_path))
-        logger.info(f"Wav2Lip model loaded from {model_path}")
-    
+        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+        self.model = None
+        self.face_detector = None
+        logger.info(f"Wav2Lip using device: {self.device}")
+
+    def _load_wav2lip_model(self, checkpoint_path: str) -> Any:
+        """Load Wav2Lip model from checkpoint"""
+        logger.info(f"Loading checkpoint from: {checkpoint_path}")
+
+        # Try loading as TorchScript model first
+        try:
+            if self.device == "cuda":
+                model = torch.jit.load(checkpoint_path)
+            else:
+                model = torch.jit.load(checkpoint_path, map_location=torch.device("cpu"))
+            logger.info("Loaded as TorchScript model")
+            model = model.to(self.device)
+            return model.eval()
+        except Exception as e:
+            logger.info(f"Not a TorchScript model, trying state_dict: {e}")
+
+        # Fallback to state_dict loading
+        wav2lip_path = str(WAV2LIP_DIR)
+        if wav2lip_path not in sys.path:
+            sys.path.insert(0, wav2lip_path)
+
+        from models import Wav2Lip
+
+        model = Wav2Lip()
+
+        if self.device == "cuda":
+            checkpoint = torch.load(checkpoint_path, weights_only=False)
+        else:
+            checkpoint = torch.load(
+                checkpoint_path,
+                map_location=torch.device("cpu"),
+                weights_only=False
+            )
+
+        # Handle 'module.' prefix from DataParallel
+        state_dict = checkpoint["state_dict"]
+        new_state_dict = {}
+        for k, v in state_dict.items():
+            new_state_dict[k.replace("module.", "")] = v
+
+        model.load_state_dict(new_state_dict)
+        model = model.to(self.device)
+        return model.eval()
+
+    def _init_face_detector(self) -> Any:
+        """Initialize face detector"""
+        wav2lip_path = str(WAV2LIP_DIR)
+        if wav2lip_path not in sys.path:
+            sys.path.insert(0, wav2lip_path)
+
+        import face_detection
+        return face_detection.FaceAlignment(
+            face_detection.LandmarksType._2D,
+            flip_input=False,
+            device=self.device
+        )
+
+    def _get_smoothened_boxes(self, boxes: np.ndarray, T: int = 5) -> np.ndarray:
+        """Smooth face detection boxes over time"""
+        for i in range(len(boxes)):
+            if i + T > len(boxes):
+                window = boxes[len(boxes) - T:]
+            else:
+                window = boxes[i : i + T]
+            boxes[i] = np.mean(window, axis=0)
+        return boxes
+
+    def _face_detect(
+        self,
+        images: list[np.ndarray],
+        pads: list[int],
+        batch_size: int,
+        nosmooth: bool
+    ) -> list[tuple[np.ndarray, tuple[int, int, int, int]]]:
+        """Detect faces in images"""
+        if self.face_detector is None:
+            self.face_detector = self._init_face_detector()
+
+        predictions = []
+        while True:
+            try:
+                for i in range(0, len(images), batch_size):
+                    batch = np.array(images[i:i + batch_size])
+                    preds = self.face_detector.get_detections_for_batch(batch)
+                    predictions.extend(preds)
+                break
+            except RuntimeError:
+                if batch_size == 1:
+                    raise RuntimeError("Image too big for face detection")
+                batch_size //= 2
+                logger.warning(f"OOM in face detection, reducing batch to {batch_size}")
+
+        pady1, pady2, padx1, padx2 = pads
+        results = []
+
+        for rect, image in zip(predictions, images):
+            if rect is None:
+                raise ValueError("Face not detected in frame")
+
+            y1 = max(0, rect[1] - pady1)
+            y2 = min(image.shape[0], rect[3] + pady2)
+            x1 = max(0, rect[0] - padx1)
+            x2 = min(image.shape[1], rect[2] + padx2)
+            results.append([x1, y1, x2, y2])
+
+        boxes = np.array(results)
+        if not nosmooth:
+            boxes = self._get_smoothened_boxes(boxes, T=5)
+
+        return [
+            (image[y1:y2, x1:x2], (y1, y2, x1, x2))
+            for image, (x1, y1, x2, y2) in zip(images, boxes)
+        ]
+
+    def _datagen(
+        self,
+        frames: list[np.ndarray],
+        mels: list[np.ndarray],
+        face_det_results: list[tuple[np.ndarray, tuple]],
+        batch_size: int,
+        static: bool = False
+    ):
+        """Generate batches for inference"""
+        img_batch, mel_batch, frame_batch, coords_batch = [], [], [], []
+
+        for i, m in enumerate(mels):
+            idx = 0 if static else i % len(frames)
+            frame_to_save = frames[idx].copy()
+            face, coords = face_det_results[idx]
+            face = face.copy()
+
+            face = cv2.resize(face, (self.img_size, self.img_size))
+
+            img_batch.append(face)
+            mel_batch.append(m)
+            frame_batch.append(frame_to_save)
+            coords_batch.append(coords)
+
+            if len(img_batch) >= batch_size:
+                img_batch_arr = np.asarray(img_batch)
+                mel_batch_arr = np.asarray(mel_batch)
+
+                img_masked = img_batch_arr.copy()
+                img_masked[:, self.img_size // 2:] = 0
+
+                img_batch_arr = np.concatenate((img_masked, img_batch_arr), axis=3) / 255.0
+                mel_batch_arr = np.reshape(
+                    mel_batch_arr,
+                    [len(mel_batch_arr), mel_batch_arr.shape[1], mel_batch_arr.shape[2], 1]
+                )
+
+                yield img_batch_arr, mel_batch_arr, frame_batch, coords_batch
+                img_batch, mel_batch, frame_batch, coords_batch = [], [], [], []
+
+        if len(img_batch) > 0:
+            img_batch_arr = np.asarray(img_batch)
+            mel_batch_arr = np.asarray(mel_batch)
+
+            img_masked = img_batch_arr.copy()
+            img_masked[:, self.img_size // 2:] = 0
+
+            img_batch_arr = np.concatenate((img_masked, img_batch_arr), axis=3) / 255.0
+            mel_batch_arr = np.reshape(
+                mel_batch_arr,
+                [len(mel_batch_arr), mel_batch_arr.shape[1], mel_batch_arr.shape[2], 1]
+            )
+
+            yield img_batch_arr, mel_batch_arr, frame_batch, coords_batch
+
+    def _extract_audio(self, audio_path: str, output_path: str) -> str:
+        """Convert audio to WAV format if needed"""
+        if audio_path.endswith(".wav"):
+            return audio_path
+
+        cmd = ["ffmpeg", "-y", "-i", audio_path, "-ar", "16000", "-ac", "1", output_path]
+        subprocess.run(cmd, check=True, capture_output=True)
+        return output_path
+
+    def _read_frames(
+        self,
+        video_path: str,
+        resize_factor: int = 1
+    ) -> tuple[list[np.ndarray], float, bool]:
+        """Read frames from video or image"""
+        ext = Path(video_path).suffix.lower()
+
+        if ext in [".jpg", ".jpeg", ".png", ".bmp"]:
+            frame = cv2.imread(video_path)
+            if frame is None:
+                raise ValueError(f"Could not read image: {video_path}")
+            return [frame], 25.0, True
+
+        cap = cv2.VideoCapture(video_path)
+        fps = cap.get(cv2.CAP_PROP_FPS)
+
+        frames = []
+        while True:
+            ret, frame = cap.read()
+            if not ret:
+                break
+
+            if resize_factor > 1:
+                h, w = frame.shape[:2]
+                frame = cv2.resize(frame, (w // resize_factor, h // resize_factor))
+
+            frames.append(frame)
+
+        cap.release()
+
+        if not frames:
+            raise ValueError(f"Could not read video: {video_path}")
+
+        return frames, fps, False
+
     def process(
         self,
         video_path: str,
@@ -78,33 +400,137 @@ class Wav2LipProcessor:
         config: LipSyncConfig
     ) -> bool:
         """
-        Process video with Wav2Lip.
-        
-        This is a placeholder - implement actual Wav2Lip inference here.
+        Process video/image with Wav2Lip to generate lip-synced output.
         """
-        logger.info(f"Processing with Wav2Lip: {video_path} + {audio_path}")
-        
-        # TODO: Implement actual Wav2Lip processing
-        # Example implementation:
-        # 1. Extract frames from video
-        # 2. Detect faces in frames
-        # 3. Extract mel spectrogram from audio
-        # 4. Run inference
-        # 5. Combine processed frames into video
-        
-        return True
+        try:
+            logger.info(f"Processing: {video_path} + {audio_path} -> {output_path}")
+
+            # Get checkpoint path
+            checkpoint_path = WAV2LIP_DIR / "checkpoints" / "wav2lip_gan.pth"
+            if not checkpoint_path.exists():
+                # Fallback to wav2lip.pth
+                checkpoint_path = WAV2LIP_DIR / "checkpoints" / "wav2lip.pth"
+
+            if not checkpoint_path.exists():
+                raise FileNotFoundError(f"Wav2Lip checkpoint not found at {checkpoint_path}")
+
+            # Load model if not already loaded
+            if self.model is None:
+                self.model = self._load_wav2lip_model(str(checkpoint_path))
+
+            # Read video frames
+            frames, fps, is_static = self._read_frames(video_path, config.resize_factor)
+            logger.info(f"Read {len(frames)} frames at {fps} fps")
+
+            # Process audio
+            with tempfile.TemporaryDirectory() as temp_dir:
+                temp_audio = Path(temp_dir) / "audio.wav"
+                wav_path = self._extract_audio(audio_path, str(temp_audio))
+
+                wav = AudioProcessor.load_wav(wav_path)
+                mel = AudioProcessor.melspectrogram(wav)
+                logger.info(f"Mel spectrogram shape: {mel.shape}")
+
+                if np.isnan(mel.reshape(-1)).sum() > 0:
+                    raise ValueError("Mel spectrogram contains NaN values")
+
+                # Split mel into chunks
+                mel_chunks = []
+                mel_idx_multiplier = 80.0 / fps
+                i = 0
+                while True:
+                    start_idx = int(i * mel_idx_multiplier)
+                    if start_idx + self.mel_step_size > mel.shape[1]:
+                        mel_chunks.append(mel[:, mel.shape[1] - self.mel_step_size:])
+                        break
+                    mel_chunks.append(mel[:, start_idx : start_idx + self.mel_step_size])
+                    i += 1
+
+                logger.info(f"Generated {len(mel_chunks)} mel chunks")
+
+                # Adjust frames to match audio
+                frames = frames[:len(mel_chunks)]
+
+                # Detect faces
+                if is_static:
+                    face_det_results = self._face_detect(
+                        [frames[0]],
+                        config.pads,
+                        config.face_det_batch_size,
+                        config.nosmooth
+                    )
+                else:
+                    face_det_results = self._face_detect(
+                        frames,
+                        config.pads,
+                        config.face_det_batch_size,
+                        config.nosmooth
+                    )
+
+                # Create temp output video
+                temp_video = Path(temp_dir) / "temp_result.avi"
+                frame_h, frame_w = frames[0].shape[:2]
+                out = cv2.VideoWriter(
+                    str(temp_video),
+                    cv2.VideoWriter_fourcc(*"DIVX"),
+                    fps,
+                    (frame_w, frame_h)
+                )
+
+                # Process batches
+                gen = self._datagen(
+                    frames.copy(),
+                    mel_chunks,
+                    face_det_results,
+                    config.wav2lip_batch_size,
+                    is_static
+                )
+
+                for img_batch, mel_batch, batch_frames, batch_coords in gen:
+                    img_batch = torch.FloatTensor(
+                        np.transpose(img_batch, (0, 3, 1, 2))
+                    ).to(self.device)
+                    mel_batch = torch.FloatTensor(
+                        np.transpose(mel_batch, (0, 3, 1, 2))
+                    ).to(self.device)
+
+                    with torch.no_grad():
+                        pred = self.model(mel_batch, img_batch)
+
+                    pred = pred.cpu().numpy().transpose(0, 2, 3, 1) * 255.0
+
+                    for p, f, c in zip(pred, batch_frames, batch_coords):
+                        y1, y2, x1, x2 = c
+                        p = cv2.resize(p.astype(np.uint8), (x2 - x1, y2 - y1))
+                        f[y1:y2, x1:x2] = p
+                        out.write(f)
+
+                out.release()
+
+                # Combine with audio using ffmpeg
+                cmd = [
+                    "ffmpeg", "-y",
+                    "-i", wav_path,
+                    "-i", str(temp_video),
+                    "-strict", "-2",
+                    "-q:v", "1",
+                    output_path
+                ]
+                subprocess.run(cmd, check=True, capture_output=True)
+
+            logger.info(f"Successfully generated: {output_path}")
+            return True
+
+        except Exception as e:
+            logger.exception(f"Wav2Lip processing failed: {e}")
+            raise
 
 
 class SadTalkerProcessor:
     """
     SadTalker implementation for talking face generation.
-    
-    To use this, you need to:
-    1. Clone SadTalker repo: git clone https://github.com/OpenTalker/SadTalker
-    2. Download pretrained models
-    3. Install dependencies
     """
-    
+
     def process(
         self,
         image_path: str,
@@ -114,26 +540,18 @@ class SadTalkerProcessor:
     ) -> bool:
         """
         Generate talking face video from image and audio.
-        
+
         This is a placeholder - implement actual SadTalker inference here.
         """
         logger.info(f"Processing with SadTalker: {image_path} + {audio_path}")
-        
-        # TODO: Implement actual SadTalker processing
-        
-        return True
+        raise NotImplementedError("SadTalker processor not yet implemented")
 
 
 class VideoReTalkingProcessor:
     """
     VideoReTalking implementation for video lip sync.
-    
-    To use this, you need to:
-    1. Clone video-retalking repo: git clone https://github.com/OpenTalker/video-retalking
-    2. Download pretrained models
-    3. Install dependencies
     """
-    
+
     def process(
         self,
         video_path: str,
@@ -143,33 +561,34 @@ class VideoReTalkingProcessor:
     ) -> bool:
         """
         Process video with VideoReTalking.
-        
+
         This is a placeholder - implement actual VideoReTalking inference here.
         """
         logger.info(f"Processing with VideoReTalking: {video_path} + {audio_path}")
-        
-        # TODO: Implement actual VideoReTalking processing
-        
-        return True
+        raise NotImplementedError("VideoReTalking processor not yet implemented")
 
 
 class LipSyncService:
     """Main service for lip sync operations"""
-    
-    _processors: dict[str, Any] = {
+
+    _processors: dict[str, type] = {
         "wav2lip": Wav2LipProcessor,
         "sadtalker": SadTalkerProcessor,
         "video_retalking": VideoReTalkingProcessor,
     }
-    
+
+    _processor_instances: dict[str, Any] = {}
+
     @classmethod
     def get_processor(cls, model_name: str) -> Any:
-        """Get the appropriate processor for the model"""
-        processor_class = cls._processors.get(model_name)
-        if not processor_class:
-            raise ValueError(f"Unknown model: {model_name}")
-        return processor_class()
-    
+        """Get the appropriate processor for the model (cached)"""
+        if model_name not in cls._processor_instances:
+            processor_class = cls._processors.get(model_name)
+            if not processor_class:
+                raise ValueError(f"Unknown model: {model_name}")
+            cls._processor_instances[model_name] = processor_class()
+        return cls._processor_instances[model_name]
+
     @classmethod
     async def process_lipsync(
         cls,
@@ -181,36 +600,38 @@ class LipSyncService:
     ) -> None:
         """
         Background task to process lip sync job.
-        
-        This method runs in the background and updates job status.
         """
         try:
             jobs[job_id].status = "processing"
             jobs[job_id].progress = 0.1
-            
+
             # Get the appropriate processor
             processor = cls.get_processor(config.model)
-            
+
             # Determine output path
             output_dir = Path(video_path).parent
             output_path = output_dir / "output.mp4"
-            
+
+            jobs[job_id].progress = 0.2
+
+            # Convert config to LipSyncConfig if needed
+            lipsync_config = LipSyncConfig(
+                model=config.model,
+                quality=config.quality,
+                fps=getattr(config, "fps", 25),
+                resize_factor=getattr(config, "resize_factor", 1),
+            )
+
             jobs[job_id].progress = 0.3
-            
+
             # Process the lip sync
-            # In a real implementation, you would:
-            # 1. Load the model
-            # 2. Process frames
-            # 3. Update progress periodically
-            # 4. Save output
-            
             success = processor.process(
                 video_path=video_path,
                 audio_path=audio_path,
                 output_path=str(output_path),
-                config=config
+                config=lipsync_config
             )
-            
+
             if success:
                 jobs[job_id].status = "completed"
                 jobs[job_id].progress = 1.0
@@ -220,7 +641,7 @@ class LipSyncService:
                 jobs[job_id].status = "failed"
                 jobs[job_id].error = "Processing failed"
                 logger.error(f"Job {job_id} failed")
-                
+
         except Exception as e:
             logger.exception(f"Error processing job {job_id}")
             jobs[job_id].status = "failed"
