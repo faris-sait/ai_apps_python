@@ -46,9 +46,7 @@ MuseTalk/models/
 LatentSync/LatentSync-main/checkpoints/
 video-retalking/checkpoints/
 
-# Output files (optional - remove if you want to track outputs)
-*_outputs/*.mp4
-*_outputs/**/*.mp4
+
 
 # Environment files
 .env
