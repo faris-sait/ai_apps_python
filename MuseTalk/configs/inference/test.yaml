@@ -1,0 +1,24 @@
+# MuseTalk Inference Configuration
+# RTX 3090 Optimized
+
+# Task 1: yongen video with yongen audio
+task_0:
+  video_path: "data/video/yongen.mp4"
+  audio_path: "data/audio/yongen.wav"
+
+# Task 2: yongen video with English audio
+task_1:
+  video_path: "data/video/yongen.mp4"
+  audio_path: "data/audio/eng.wav"
+  bbox_shift: -7
+
+# Task 3: sun video with sun audio
+task_2:
+  video_path: "data/video/sun.mp4"
+  audio_path: "data/audio/sun.wav"
+
+# Task 4: sun video with English audio
+task_3:
+  video_path: "data/video/sun.mp4"
+  audio_path: "data/audio/eng.wav"
+  bbox_shift: 0

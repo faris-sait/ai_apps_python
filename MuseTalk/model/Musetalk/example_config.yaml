@@ -1,0 +1,72 @@
+# MuseTalk Inference Configuration Example
+# Copy this file and modify for your videos
+
+# Single task - basic example
+task_0:
+  video_path: "data/video/your_video.mp4"
+  audio_path: "data/audio/your_audio.wav"
+  # bbox_shift: 0  # Optional: adjust face detection region
+
+# Multiple tasks - process different audios with same video
+# Uncomment below to use multiple tasks
+
+# task_1:
+#   video_path: "data/video/your_video.mp4"
+#   audio_path: "data/audio/another_audio.wav"
+#   bbox_shift: 0
+
+# task_2:
+#   video_path: "data/video/another_video.mp4"
+#   audio_path: "data/audio/yet_another_audio.wav"
+#   bbox_shift: -5  # Shift face region up
+
+
+# ====================================
+# Configuration Parameter Guide:
+# ====================================
+
+# video_path: Path to input video file
+#   - Supported: MP4, AVI, MOV, FLV
+#   - Resolution: Recommend 480p or higher
+#   - Format: String, relative path from MuseTalk root
+
+# audio_path: Path to input audio file
+#   - Supported: WAV, MP3, AAC
+#   - Recommend: 16kHz, 16-bit WAV for best results
+#   - Format: String, relative path from MuseTalk root
+
+# bbox_shift: Face region shift adjustment (OPTIONAL)
+#   - Range: -20 to 20 (pixels)
+#   - Positive: Shift face region DOWN
+#   - Negative: Shift face region UP
+#   - Default: 0 (no shift)
+#   - Impact: Can significantly affect lip-sync quality
+#   - Usage: Adjust if face is not properly centered
+
+# ====================================
+# Examples:
+# ====================================
+
+# Example 1: Simple single task
+# task_0:
+#   video_path: "data/video/person.mp4"
+#   audio_path: "data/audio/speech.wav"
+
+# Example 2: With face shift adjustment
+# task_0:
+#   video_path: "data/video/person.mp4"
+#   audio_path: "data/audio/speech.wav"
+#   bbox_shift: -5
+
+# Example 3: Multiple videos and audios
+# task_0:
+#   video_path: "data/video/person1.mp4"
+#   audio_path: "data/audio/chinese.wav"
+# task_1:
+#   video_path: "data/video/person1.mp4"
+#   audio_path: "data/audio/english.wav"
+#   bbox_shift: 3
+# task_2:
+#   video_path: "data/video/person2.mp4"
+#   audio_path: "data/audio/spanish.wav"
+#   bbox_shift: -2
