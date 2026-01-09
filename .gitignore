@@ -1,52 +1,30 @@
-.vscode
-node_modules/
-/test-results/
-/playwright-report/
-/blob-report/
-/playwright/.cache/
-models/
-nul
-*.pth
-*.pt
-*.onnx
-*.pkl
-*.ckpt
-*.safetensors
-backend/gfpgan/
+# Ignore everything by default
+/*
 
-# Virtual environments
-venv/
-**/venv/
-.venv/
-env/
+# But include these specific folders
+!/hallo/
+!/Halloinput/
+!/halloouput/
 
-# Large files
-*.zip
-*.tar.gz
-*.tar
-*.rar
+# Within hallo folder, ignore large model files and cache
+hallo/pretrained_models/
+hallo/.cache/
+hallo/**/*.pth
+hallo/**/*.pt
+hallo/**/*.onnx
+hallo/**/*.ckpt
+hallo/**/*.safetensors
+hallo/**/__pycache__/
+hallo/**/*.pyc
+hallo/**/.cache/
+hallo/**/venv/
+hallo/**/.venv/
 
-# Checkpoints and weights
-checkpoints/
-**/checkpoints/
-weights/
-**/weights/
+# Within output folder, ignore very large video files (optional - uncomment if you don't want to track videos)
+# halloouput/*.mp4
+# halloouput/*.avi
 
-# Cache and temp
-__pycache__/
-**/__pycache__/
-.cache/
-**/.cache/
-*.pyc
-temp/
-**/temp/
-
-# Model directories
-MuseTalk/models/
-LatentSync/LatentSync-main/checkpoints/
-video-retalking/checkpoints/
-
-
-
-# Environment files
-.env
+# Keep the folder structure
+!hallo/.gitkeep
+!halloouput/.gitkeep
+!Halloinput/.gitkeep
