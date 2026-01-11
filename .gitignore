@@ -5,6 +5,9 @@
 !/hallo/
 !/Halloinput/
 !/halloouput/
+!/Sadtalker_inputs_outputs/
+!/MuseTalk_inputs_outputs/
+!/LatentSync_inputs_outputs/
 
 # Within hallo folder, ignore large model files and cache
 hallo/pretrained_models/
