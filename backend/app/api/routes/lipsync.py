@@ -2,7 +2,7 @@
 Lip Sync API Routes
 
 This module provides endpoints for lip sync generation using open-source libraries.
-Supported libraries can include: Wav2Lip, SadTalker, VideoReTalking, etc.
+Supported libraries can include: Wav2Lip, SadTalker, VideoReTalking, MuseTalk, etc.
 """
 
 import uuid
@@ -13,9 +13,109 @@ from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, Uploa
 from pydantic import BaseModel
 
 from app.core.config import settings
+from app.schemas.lipsync import LipSyncProvider, LipSyncRequest, LipSyncResponse
+from app.services.factory import run_lipsync, UnsupportedProviderError
 from app.services.lipsync import LipSyncService, LipSyncStatus
 
 router = APIRouter(prefix="/lipsync", tags=["lipsync"])
+
+
+# =============================================================================
+# NEW UNIFIED ENDPOINT - Provider-based API
+# =============================================================================
+
+@router.post("/", response_model=LipSyncResponse)
+async def lip_sync(request: LipSyncRequest) -> LipSyncResponse:
+    """
+    Unified lip-sync endpoint supporting multiple providers.
+    
+    Send a request with the provider name and file paths to generate lip-synced video.
+    
+    **Supported Providers:**
+    - `musetalk` - MuseTalk for high-quality lip sync
+    - `wav2lip` - (coming soon)
+    - `sadtalker` - (coming soon)
+    - `video_retalking` - (coming soon)
+    - `latentsync` - (coming soon)
+    - `hallo` - (coming soon)
+    
+    **Example Request:**
+    ```json
+    {
+        "provider": "musetalk",
+        "video_path": "/path/to/video.mp4",
+        "audio_path": "/path/to/audio.wav",
+        "output_path": "/path/to/output.mp4",
+        "options": {
+            "version": "v15",
+            "use_float16": true,
+            "fps": 25
+        }
+    }
+    ```
+    
+    **Returns:**
+    - `success`: Whether the operation completed successfully
+    - `provider`: The provider that was used
+    - `output_path`: Path to the generated video
+    - `message`: Status message or error details
+    - `metadata`: Additional provider-specific metadata
+    """
+    return run_lipsync(request)
+
+
+@router.get("/providers")
+async def list_providers() -> dict:
+    """
+    List all available lip-sync providers and their status.
+    """
+    return {
+        "providers": [
+            {
+                "name": "musetalk",
+                "status": "available",
+                "description": "MuseTalk - High-quality lip sync with Whisper audio features",
+                "supports_video": True,
+                "supports_image": True,
+                "options": {
+                    "version": "v1 or v15 (default: v15)",
+                    "use_float16": "boolean (default: true)",
+                    "fps": "integer (default: 25)",
+                    "gpu_id": "integer (default: 0)"
+                }
+            },
+            {
+                "name": "wav2lip",
+                "status": "coming_soon",
+                "description": "Wav2Lip - Accurate lip sync with pre-trained models"
+            },
+            {
+                "name": "sadtalker",
+                "status": "coming_soon",
+                "description": "SadTalker - Stylized audio-driven talking face generation"
+            },
+            {
+                "name": "video_retalking",
+                "status": "coming_soon",
+                "description": "VideoReTalking - Audio-based lip sync for videos"
+            },
+            {
+                "name": "latentsync",
+                "status": "coming_soon",
+                "description": "LatentSync - Latent space lip sync"
+            },
+            {
+                "name": "hallo",
+                "status": "coming_soon",
+                "description": "Hallo - Audio-driven portrait animation"
+            }
+        ]
+    }
+
+
+# =============================================================================
+# LEGACY ENDPOINTS - Keep for backward compatibility
+# =============================================================================
 
 
 class LipSyncJobResponse(BaseModel):

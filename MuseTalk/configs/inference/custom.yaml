@@ -1,0 +1,6 @@
+# Custom MuseTalk Inference Configuration
+
+task_0:
+  video_path: "/home/vineeth/Documents/projects/avatar_faris/ai_apps_python/MuseTalk_inputs/video/landscape_preview_video.mp4"
+  audio_path: "/home/vineeth/Documents/projects/avatar_faris/ai_apps_python/MuseTalk_inputs/audio/eng.wav"
+  result_name: "landscape_eng_output.mp4"
