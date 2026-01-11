@@ -19,7 +19,7 @@ class AlignRestore(object):
             self.p_bias = None
             self.device = device
             self.dtype = dtype
-            self.fill_value = torch.tensor([127, 127, 127], device=device, dtype=dtype)
+            self.fill_value = torch.tensor([0, 0, 0], device=device, dtype=dtype)  # Changed from gray to black
             self.mask = torch.ones((1, 1, self.face_size[1], self.face_size[0]), device=device, dtype=dtype)
 
     def align_warp_face(self, img, landmarks3, smooth=True):

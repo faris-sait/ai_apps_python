@@ -65,6 +65,9 @@ class Wav2VecModel(Wav2Vec2Model):
         Returns:
             The output of the Wav2Vec model.
         """
+        # Set attn_implementation to eager to support output_attentions with newer transformers
+        if hasattr(self.config, '_attn_implementation'):
+            self.config._attn_implementation = 'eager'
         self.config.output_attentions = True
 
         output_hidden_states = (
