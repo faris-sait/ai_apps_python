@@ -1,33 +1,125 @@
-# Ignore everything by default
-/*
+# ============================================
+# AI/ML Model Files (Global - applies to all folders)
+# ============================================
+*.pth
+*.pt
+*.onnx
+*.ckpt
+*.safetensors
+*.h5
+*.hdf5
+*.pb
+*.tflite
+*.mlmodel
+*.caffemodel
+*.weights
+*.bin
+*.mar
+*.pkl
+*.pickle
 
-# But include these specific folders
-!/hallo/
-!/Halloinput/
-!/halloouput/
-!/Sadtalker_inputs_outputs/
-!/MuseTalk_inputs_outputs/
-!/LatentSync_inputs_outputs/
+# ============================================
+# Python
+# ============================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
-# Within hallo folder, ignore large model files and cache
-hallo/pretrained_models/
-hallo/.cache/
-hallo/**/*.pth
-hallo/**/*.pt
-hallo/**/*.onnx
-hallo/**/*.ckpt
-hallo/**/*.safetensors
-hallo/**/__pycache__/
-hallo/**/*.pyc
-hallo/**/.cache/
-hallo/**/venv/
-hallo/**/.venv/
+# Virtual environments
+venv/
+.venv/
+ENV/
+env/
+.conda/
 
-# Within output folder, ignore very large video files (optional - uncomment if you don't want to track videos)
-# halloouput/*.mp4
-# halloouput/*.avi
+# ============================================
+# IDE and Editor
+# ============================================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
 
-# Keep the folder structure
-!hallo/.gitkeep
-!halloouput/.gitkeep
-!Halloinput/.gitkeep
+# ============================================
+# Cache and Temp Files
+# ============================================
+.cache/
+*.cache
+.temp/
+tmp/
+*.tmp
+*.log
+*.bak
+
+# ============================================
+# OS Generated Files
+# ============================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ============================================
+# Large Data Files (optional - uncomment if needed)
+# ============================================
+# *.mp4
+# *.avi
+# *.mov
+# *.mkv
+# *.wav
+# *.mp3
+
+# ============================================
+# Pretrained Models Folders (common locations)
+# ============================================
+**/pretrained_models/
+**/checkpoints/
+**/weights/
+**/models/*.pth
+**/models/*.pt
+**/models/*.onnx
+
+# ============================================
+# Environment and Secrets
+# ============================================
+.env
+.env.local
+.env.*.local
+*.secret
+
+# ============================================
+# Jupyter Notebooks Checkpoints
+# ============================================
+.ipynb_checkpoints/
+
+# ============================================
+# Node.js (if frontend exists)
+# ============================================
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
