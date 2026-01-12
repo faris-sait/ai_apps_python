@@ -13,11 +13,13 @@ from pydantic import BaseModel, Field
 class LipSyncProvider(str, Enum):
     """Supported lip-sync providers"""
     MUSETALK = "musetalk"
-    WAV2LIP = "wav2lip"
     SADTALKER = "sadtalker"
-    VIDEO_RETALKING = "video_retalking"
-    LATENTSYNC = "latentsync"
-    HALLO = "hallo"
+
+
+class LipSyncMode(str, Enum):
+    """Input mode for lip-sync generation"""
+    IMAGE_AUDIO = "image_audio"  # Still image + audio -> lip-synced talking head video
+    VIDEO_AUDIO = "video_audio"  # Video + audio -> lip-synced video
 
 
 class LipSyncRequest(BaseModel):
@@ -27,10 +29,20 @@ class LipSyncRequest(BaseModel):
         description="The lip-sync provider to use",
         examples=["musetalk"]
     )
-    video_path: str = Field(
+    mode: LipSyncMode = Field(
         ...,
-        description="Path to the input video or image file",
+        description="Input mode: 'image_audio' for image+audio or 'video_audio' for video+audio",
+        examples=["video_audio"]
+    )
+    video_path: str | None = Field(
+        default=None,
+        description="Path to the input video file (required for video_audio mode)",
         examples=["/path/to/video.mp4"]
+    )
+    image_path: str | None = Field(
+        default=None,
+        description="Path to the input image file (required for image_audio mode)",
+        examples=["/path/to/image.jpg"]
     )
     audio_path: str = Field(
         ...,

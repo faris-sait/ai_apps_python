@@ -5,12 +5,20 @@ This module provides endpoints for lip sync generation using open-source librari
 Supported libraries can include: Wav2Lip, SadTalker, VideoReTalking, MuseTalk, etc.
 """
 
+import asyncio
+import json
+import random
+import string
 import uuid
+from datetime import datetime
+from enum import Enum
 from pathlib import Path
 from typing import Annotated
+from uuid import uuid4
 
 from fastapi import APIRouter, BackgroundTasks, File, Form, HTTPException, UploadFile
-from pydantic import BaseModel
+from fastapi.responses import FileResponse, PlainTextResponse
+from pydantic import BaseModel, Field
 
 from app.core.config import settings
 from app.schemas.lipsync import LipSyncProvider, LipSyncRequest, LipSyncResponse
@@ -18,6 +26,40 @@ from app.services.factory import run_lipsync, UnsupportedProviderError
 from app.services.lipsync import LipSyncService, LipSyncStatus
 
 router = APIRouter(prefix="/lipsync", tags=["lipsync"])
+
+
+# =============================================================================
+# JOB MANAGEMENT - Background processing with DB persistence
+# =============================================================================
+
+class JobStatus(str, Enum):
+    """Job execution status"""
+    PENDING = "pending"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class JobInfo(BaseModel):
+    """Job information model"""
+    id: str
+    status: JobStatus
+    provider: LipSyncProvider
+    mode: str
+    input_path: str | None
+    audio_path: str
+    output_path: str | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+    message: str | None = None
+    log: str | None = None
+    log_path: str | None = None
+    metadata: dict | None = None
+
+
+# In-memory job cache (also persisted to DB)
+jobs_cache: dict[str, JobInfo] = {}
 
 
 # =============================================================================
@@ -29,26 +71,42 @@ async def lip_sync(request: LipSyncRequest) -> LipSyncResponse:
     """
     Unified lip-sync endpoint supporting multiple providers.
     
-    Send a request with the provider name and file paths to generate lip-synced video.
+    Send a request with the provider name, mode, and file paths to generate lip-synced video.
+    
+    **Modes:**
+    - `image_audio` - Generate lip-synced video from still image + audio
+    - `video_audio` - Generate lip-synced video from video + audio
     
     **Supported Providers:**
-    - `musetalk` - MuseTalk for high-quality lip sync
-    - `wav2lip` - (coming soon)
-    - `sadtalker` - (coming soon)
-    - `video_retalking` - (coming soon)
-    - `latentsync` - (coming soon)
-    - `hallo` - (coming soon)
+    - `musetalk` - MuseTalk for high-quality lip sync (supports image & video)
+    - `sadtalker` - SadTalker for stylized talking face generation (image only)
     
-    **Example Request:**
+    **Example Request (Video + Audio):**
     ```json
     {
         "provider": "musetalk",
+        "mode": "video_audio",
         "video_path": "/path/to/video.mp4",
         "audio_path": "/path/to/audio.wav",
         "output_path": "/path/to/output.mp4",
         "options": {
             "version": "v15",
             "use_float16": true,
+            "fps": 25
+        }
+    }
+    ```
+    
+    **Example Request (Image + Audio):**
+    ```json
+    {
+        "provider": "musetalk",
+        "mode": "image_audio",
+        "image_path": "/path/to/portrait.jpg",
+        "audio_path": "/path/to/audio.wav",
+        "output_path": "/path/to/output.mp4",
+        "options": {
+            "version": "v15",
             "fps": 25
         }
     }
@@ -85,29 +143,19 @@ async def list_providers() -> dict:
                 }
             },
             {
-                "name": "wav2lip",
-                "status": "coming_soon",
-                "description": "Wav2Lip - Accurate lip sync with pre-trained models"
-            },
-            {
                 "name": "sadtalker",
-                "status": "coming_soon",
-                "description": "SadTalker - Stylized audio-driven talking face generation"
-            },
-            {
-                "name": "video_retalking",
-                "status": "coming_soon",
-                "description": "VideoReTalking - Audio-based lip sync for videos"
-            },
-            {
-                "name": "latentsync",
-                "status": "coming_soon",
-                "description": "LatentSync - Latent space lip sync"
-            },
-            {
-                "name": "hallo",
-                "status": "coming_soon",
-                "description": "Hallo - Audio-driven portrait animation"
+                "status": "available",
+                "description": "SadTalker - Stylized audio-driven talking face generation",
+                "supports_video": False,
+                "supports_image": True,
+                "options": {
+                    "pose_style": "integer 0-45 (default: 0)",
+                    "expression_scale": "float (default: 1.0)",
+                    "enhancer": "'gfpgan' or 'RestoreFormer' (default: none)",
+                    "preprocess": "'crop', 'resize', or 'full' (default: 'crop')",
+                    "still": "boolean (default: false)",
+                    "size": "256 or 512 (default: 256)"
+                }
             }
         ]
     }
@@ -322,3 +370,264 @@ async def download_result(job_id: str):
         media_type="video/mp4",
         filename=f"lipsync_{job_id}.mp4"
     )
+
+
+# =============================================================================
+# BACKGROUND JOBS API - Database-backed job tracking
+# =============================================================================
+
+# Import DB functions (create a stub if db.py doesn't exist in backend)
+try:
+    import sys
+    from pathlib import Path as P
+    # Add parent directory to path to import root-level db.py
+    root_dir = P(__file__).parent.parent.parent.parent.parent
+    if str(root_dir) not in sys.path:
+        sys.path.insert(0, str(root_dir))
+    from db import (
+        create_job_record, 
+        update_job_record, 
+        get_job_record, 
+        list_job_records,
+        append_job_log,
+        get_job_logs as db_get_job_logs,
+        init_db
+    )
+    # Initialize DB on module load
+    init_db()
+    DB_AVAILABLE = True
+except ImportError:
+    DB_AVAILABLE = False
+    # Stub functions if DB not available
+    def create_job_record(data): pass
+    def update_job_record(job_id, updates): pass
+    def get_job_record(job_id): return None
+    def list_job_records(): return []
+    def append_job_log(job_id, content): pass
+    def db_get_job_logs(job_id): return []
+
+
+# Import provider runners (from root-level lipsync_api.py)
+try:
+    from lipsync_api import run_musetalk, run_sadtalker, LipSyncMode
+except ImportError:
+    # Fallback stubs
+    class LipSyncMode(str, Enum):
+        IMAGE_AUDIO = "image_audio"
+        VIDEO_AUDIO = "video_audio"
+    
+    def run_musetalk(input_path, audio_path, output_path, options):
+        return {"success": False, "message": "MuseTalk not configured"}
+    
+    def run_sadtalker(input_path, audio_path, output_path, options):
+        return {"success": False, "message": "SadTalker not configured"}
+
+
+async def _run_background_job(job_id: str, request: LipSyncRequest) -> None:
+    """Internal: run a job in background and update its status."""
+    job = jobs_cache[job_id]
+    job.status = JobStatus.RUNNING
+    job.started_at = datetime.utcnow()
+    
+    # Update DB
+    update_job_record(job_id, {
+        "status": job.status.value,
+        "started_at": job.started_at
+    })
+    
+    # Determine input path
+    input_path = request.image_path if request.mode == "image_audio" else request.video_path
+    options = request.options or {}
+    options["input_type"] = "image" if request.mode == "image_audio" else "video"
+    options["job_id"] = job_id  # Add job_id for unique output paths
+    
+    try:
+        # Run provider
+        if request.provider == LipSyncProvider.MUSETALK:
+            result = await asyncio.to_thread(run_musetalk, input_path, request.audio_path, request.output_path, options)
+        elif request.provider == LipSyncProvider.SADTALKER:
+            result = await asyncio.to_thread(run_sadtalker, input_path, request.audio_path, request.output_path, options)
+        else:
+            result = {"success": False, "message": f"Unknown provider: {request.provider}"}
+        
+        job.finished_at = datetime.utcnow()
+        job.message = result.get("message")
+        job.metadata = result.get("metadata")
+        job.output_path = result.get("output_path")
+        
+        # Write logs to file
+        logs_dir = Path(settings.UPLOAD_DIR).parent / "job_logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        log_path = logs_dir / f"{job.id}.log"
+        raw_stdout = result.get("raw_stdout", "")
+        raw_stderr = result.get("raw_stderr", "")
+        
+        with open(log_path, "w", encoding="utf-8") as fh:
+            fh.write(f"Job {job.id}\n")
+            fh.write(f"Provider: {job.provider}\n")
+            fh.write(f"Mode: {job.mode}\n")
+            fh.write(f"Input: {job.input_path}\n")
+            fh.write(f"Audio: {job.audio_path}\n")
+            fh.write(f"Output: {job.output_path}\n")
+            fh.write(f"Created: {job.created_at}\n")
+            fh.write(f"Started: {job.started_at}\n")
+            fh.write(f"Finished: {job.finished_at}\n")
+            fh.write(f"\n{'='*60}\nSTDOUT:\n{'='*60}\n")
+            fh.write(raw_stdout)
+            fh.write(f"\n{'='*60}\nSTDERR:\n{'='*60}\n")
+            fh.write(raw_stderr)
+        
+        job.log_path = str(log_path)
+        job.log = f"Logs saved to {log_path}"
+        
+        # Persist logs to DB
+        if raw_stdout:
+            append_job_log(job.id, f"STDOUT:\n{raw_stdout}")
+        if raw_stderr:
+            append_job_log(job.id, f"STDERR:\n{raw_stderr}")
+        
+        # Update final status
+        if result.get("success"):
+            job.status = JobStatus.SUCCEEDED
+            if not job.log:
+                job.log = "Job completed successfully"
+        else:
+            job.status = JobStatus.FAILED
+            if not job.log:
+                job.log = job.message or "No error message"
+        
+    except Exception as e:
+        job.finished_at = datetime.utcnow()
+        job.status = JobStatus.FAILED
+        job.message = str(e)
+        job.log = str(e)
+        
+        # Write error to log file
+        logs_dir = Path(settings.UPLOAD_DIR).parent / "job_logs"
+        logs_dir.mkdir(parents=True, exist_ok=True)
+        log_path = logs_dir / f"{job.id}.log"
+        with open(log_path, "a", encoding="utf-8") as fh:
+            fh.write("\nException:\n")
+            fh.write(str(e))
+        job.log_path = str(log_path)
+        
+        append_job_log(job.id, f"Exception: {e}")
+    
+    # Final DB update
+    update_job_record(job_id, {
+        "status": job.status.value,
+        "finished_at": job.finished_at,
+        "message": job.message,
+        "log_path": job.log_path,
+        "output_path": job.output_path,
+        "metadata_json": json.dumps(job.metadata) if job.metadata else None
+    })
+
+
+@router.post("/jobs", status_code=202)
+async def create_lipsync_job(request: LipSyncRequest):
+    """
+    Create a background lip-sync job and return job ID.
+    
+    This endpoint accepts a lip-sync request and processes it asynchronously.
+    Use the returned job_id to poll for status and retrieve results.
+    """
+    # Validate input
+    if request.mode == "image_audio":
+        if not request.image_path:
+            raise HTTPException(status_code=400, detail="image_path required for image_audio mode")
+        input_path = request.image_path
+    else:
+        if not request.video_path:
+            raise HTTPException(status_code=400, detail="video_path required for video_audio mode")
+        input_path = request.video_path
+    
+    # Generate short 4-character alphanumeric job ID
+    job_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
+    
+    job = JobInfo(
+        id=job_id,
+        status=JobStatus.PENDING,
+        provider=request.provider,
+        mode=request.mode,
+        input_path=input_path,
+        audio_path=request.audio_path,
+        output_path=request.output_path,
+        created_at=datetime.utcnow()
+    )
+    
+    jobs_cache[job_id] = job
+    
+    # Persist to DB
+    create_job_record({
+        "id": job.id,
+        "provider": job.provider.value,
+        "mode": job.mode,
+        "input_path": job.input_path,
+        "audio_path": job.audio_path,
+        "output_path": job.output_path,
+        "status": job.status.value,
+        "created_at": job.created_at,
+        "message": job.message,
+        "log_path": job.log_path,
+        "metadata_json": json.dumps(job.metadata) if job.metadata else None
+    })
+    
+    # Schedule background run
+    asyncio.create_task(_run_background_job(job_id, request))
+    
+    return {"job_id": job_id, "status": job.status}
+
+
+@router.get("/jobs/{job_id}")
+async def get_lipsync_job(job_id: str):
+    """Get job status and details."""
+    job = jobs_cache.get(job_id)
+    if not job:
+        # Try fetching from DB
+        db_job = get_job_record(job_id)
+        if not db_job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return db_job
+    return job
+
+
+@router.get("/jobs")
+async def list_lipsync_jobs():
+    """List all jobs (from cache and DB)."""
+    all_jobs = list(jobs_cache.values())
+    # Optionally merge with DB jobs
+    if DB_AVAILABLE:
+        db_jobs = list_job_records()
+        # Add DB jobs not in cache
+        cache_ids = {j.id for j in all_jobs}
+        for db_job in db_jobs:
+            if db_job.id not in cache_ids:
+                all_jobs.append(db_job)
+    return {"jobs": all_jobs}
+
+
+@router.get("/jobs/{job_id}/logs")
+async def get_lipsync_job_logs(job_id: str):
+    """Return job logs as plain text (tries filesystem then DB)."""
+    job = jobs_cache.get(job_id)
+    if not job:
+        job = get_job_record(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    # Try log file on disk
+    if getattr(job, "log_path", None):
+        log_file = Path(job.log_path)
+        if log_file.exists():
+            return FileResponse(log_file, media_type="text/plain", filename=f"{job_id}.log")
+    
+    # Fallback to DB logs
+    logs = []
+    try:
+        db_logs = db_get_job_logs(job_id)
+        logs = [l.content for l in db_logs]
+    except Exception:
+        logs = ["No logs available"]
+    
+    return PlainTextResponse("\n\n".join(logs))

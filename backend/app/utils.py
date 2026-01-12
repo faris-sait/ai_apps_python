@@ -4,7 +4,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-import emails  # type: ignore
+# import emails  # type: ignore  # Disabled - not needed for lip-sync functionality
 import jwt
 from jinja2 import Template
 from jwt.exceptions import InvalidTokenError

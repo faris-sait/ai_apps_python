@@ -3,13 +3,15 @@ Pydantic schemas for API request/response models
 """
 
 from app.schemas.lipsync import (
+    LipSyncMode,
+    LipSyncProvider,
     LipSyncRequest,
     LipSyncResponse,
-    LipSyncProvider,
 )
 
 __all__ = [
+    "LipSyncMode",
+    "LipSyncProvider",
     "LipSyncRequest",
     "LipSyncResponse",
-    "LipSyncProvider",
 ]
