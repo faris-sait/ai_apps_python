@@ -100,7 +100,7 @@ def run_musetalk(
     
     # Generate output path - save directly to MuseTalk_inputs_outputs folder
     if not output_path:
-        output_dir = BASE_DIR / "MuseTalk_inputs_outputs"
+        output_dir = Path("/home/vineeth/Documents/projects/avatar_faris/ai_apps_python/MuseTalk_inputs_outputs")
         output_dir.mkdir(parents=True, exist_ok=True)
         
         if job_id:

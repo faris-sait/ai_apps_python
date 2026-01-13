@@ -88,7 +88,7 @@ class MuseTalkProvider(BaseLipSyncProvider):
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             video_name = Path(video_path).stem
             audio_name = Path(audio_path).stem
-            output_dir = Path(__file__).parent.parent.parent.parent.parent / "MuseTalk_inputs_outputs"
+            output_dir = Path("/home/vineeth/Documents/projects/avatar_faris/ai_apps_python/MuseTalk_inputs_outputs")
             output_dir.mkdir(parents=True, exist_ok=True)
             output_path = str(output_dir / f"{video_name}_{audio_name}_{timestamp}.mp4")
         

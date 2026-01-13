@@ -542,8 +542,8 @@ async def create_lipsync_job(request: LipSyncRequest):
             raise HTTPException(status_code=400, detail="video_path required for video_audio mode")
         input_path = request.video_path
     
-    # Generate short 4-character alphanumeric job ID
-    job_id = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
+    # Generate full UUID job ID
+    job_id = str(uuid.uuid4())
     
     job = JobInfo(
         id=job_id,
