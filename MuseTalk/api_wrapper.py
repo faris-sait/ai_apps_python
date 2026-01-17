@@ -20,6 +20,7 @@ if __name__ == "__main__":
     parser.add_argument("--output", required=True)
     parser.add_argument("--version", default="v15")
     parser.add_argument("--fps", type=int, default=25)
+    parser.add_argument("--job_id", default=None, help="Job ID for output filename")
     
     args = parser.parse_args()
     
@@ -28,6 +29,7 @@ if __name__ == "__main__":
     print(f"Audio: {args.audio}")
     print(f"Output: {args.output}")
     print(f"Version: {args.version}")
+    print(f"Job ID: {args.job_id}")
     
     # Import and run inference
     try:
@@ -65,7 +67,8 @@ if __name__ == "__main__":
                 self.audio_padding_length_left = 2
                 self.audio_padding_length_right = 2
                 self.batch_size = 8
-                self.output_vid_name = None
+                # Use job_id for output filename if provided
+                self.output_vid_name = f"{args.job_id}.mp4" if args.job_id else None
                 self.parsing_mode = "jaw"
                 self.left_cheek_width = 90
                 self.right_cheek_width = 90
@@ -100,10 +103,13 @@ if __name__ == "__main__":
             print("✓ Inference completed")
             
             # Construct expected output path
-            video_name = Path(args.video).stem
-            audio_name = Path(args.audio).stem
-            output_basename = f"{video_name}_{audio_name}"
-            expected_output = Path(args.output) / args.version / f"{output_basename}.mp4"
+            if args.job_id:
+                expected_output = Path(args.output) / args.version / f"{args.job_id}.mp4"
+            else:
+                video_name = Path(args.video).stem
+                audio_name = Path(args.audio).stem
+                output_basename = f"{video_name}_{audio_name}"
+                expected_output = Path(args.output) / args.version / f"{output_basename}.mp4"
             print(f"Expected output: {expected_output}")
         finally:
             # Clean up temp config

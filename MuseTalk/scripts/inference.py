@@ -9,6 +9,7 @@ import pickle
 import argparse
 import numpy as np
 import subprocess
+import shlex
 from tqdm import tqdm
 from omegaconf import OmegaConf
 from transformers import WhisperModel
@@ -98,29 +99,31 @@ def main(args):
             # Set output paths
             input_basename = os.path.basename(video_path).split('.')[0]
             audio_basename = os.path.basename(audio_path).split('.')[0]
-            output_basename = f"{input_basename}_{audio_basename}"
+            
+            # Use output_vid_name (without .mp4) as base if provided, otherwise use input_audio combo
+            if args.output_vid_name:
+                output_basename = os.path.splitext(args.output_vid_name)[0]  # Remove .mp4 extension
+            else:
+                output_basename = f"{input_basename}_{audio_basename}"
             
             # Create temporary directories
             temp_dir = os.path.join(args.result_dir, f"{args.version}")
             os.makedirs(temp_dir, exist_ok=True)
             
-            # Set result save paths
+            # Set result save paths - use output_basename for temp folder (job_id if available)
             result_img_save_path = os.path.join(temp_dir, output_basename)
-            crop_coord_save_path = os.path.join(args.result_dir, "../", input_basename+".pkl")
+            crop_coord_save_path = os.path.join(args.result_dir, "../", output_basename+".pkl")
             os.makedirs(result_img_save_path, exist_ok=True)
             
             # Set output video paths
-            if args.output_vid_name is None:
-                output_vid_name = os.path.join(temp_dir, output_basename + ".mp4")
-            else:
-                output_vid_name = os.path.join(temp_dir, args.output_vid_name)
+            output_vid_name = os.path.join(temp_dir, output_basename + ".mp4")
             output_vid_name_concat = os.path.join(temp_dir, output_basename + "_concat.mp4")
             
             # Extract frames from source video
             if get_file_type(video_path) == "video":
                 save_dir_full = os.path.join(temp_dir, input_basename)
                 os.makedirs(save_dir_full, exist_ok=True)
-                cmd = f"ffmpeg -v fatal -i {video_path} -start_number 0 {save_dir_full}/%08d.png"
+                cmd = f"ffmpeg -v fatal -i {shlex.quote(video_path)} -start_number 0 {shlex.quote(save_dir_full)}/%08d.png"
                 os.system(cmd)
                 input_img_list = sorted(glob.glob(os.path.join(save_dir_full, '*.[jpJP][pnPN]*[gG]')))
                 fps = get_video_fps(video_path)
@@ -228,11 +231,11 @@ def main(args):
 
             # Save prediction results
             temp_vid_path = f"{temp_dir}/temp_{input_basename}_{audio_basename}.mp4"
-            cmd_img2video = f"ffmpeg -y -v warning -r {fps} -f image2 -i {result_img_save_path}/%08d.png -vcodec libx264 -vf format=yuv420p -crf 18 {temp_vid_path}"
+            cmd_img2video = f"ffmpeg -y -v warning -r {fps} -f image2 -i {shlex.quote(result_img_save_path)}/%08d.png -vcodec libx264 -vf format=yuv420p -crf 18 {shlex.quote(temp_vid_path)}"
             print("Video generation command:", cmd_img2video)
             os.system(cmd_img2video)   
             
-            cmd_combine_audio = f"ffmpeg -y -v warning -i {audio_path} -i {temp_vid_path} {output_vid_name}"
+            cmd_combine_audio = f"ffmpeg -y -v warning -i {shlex.quote(audio_path)} -i {shlex.quote(temp_vid_path)} {shlex.quote(output_vid_name)}"
             print("Audio combination command:", cmd_combine_audio) 
             os.system(cmd_combine_audio)
             

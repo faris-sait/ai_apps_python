@@ -566,7 +566,7 @@ class SadTalkerProcessor:
             str(config_dir),
             size,
             False,  # old_version
-            "crop"  # preprocess
+            "full"  # preprocess - use 'full' to paste face back onto original image
         )
 
         logger.info("Loading SadTalker preprocess model...")
@@ -631,7 +631,7 @@ class SadTalkerProcessor:
             first_coeff_path, crop_pic_path, crop_info = self.preprocess_model.generate(
                 str(image_path),
                 str(first_frame_dir),
-                "crop",  # preprocess mode
+                "full",  # preprocess mode - 'full' pastes animated face back to original image
                 source_image_flag=True,
                 pic_size=size
             )
@@ -669,7 +669,7 @@ class SadTalkerProcessor:
                 input_roll_list=None,
                 expression_scale=1.0,
                 still_mode=True,
-                preprocess="crop",
+                preprocess="full",  # Use 'full' to preserve original body
                 size=size
             )
 
@@ -683,7 +683,7 @@ class SadTalkerProcessor:
                 crop_info,
                 enhancer=enhancer,
                 background_enhancer=None,
-                preprocess="crop",
+                preprocess="full",  # Use 'full' to paste animated face back to original image
                 img_size=size
             )
 

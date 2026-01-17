@@ -53,8 +53,8 @@ class SadTalkerProvider(BaseLipSyncProvider):
                 - pose_style: int (0-45, default: 0)
                 - expression_scale: float (default: 1.0)
                 - enhancer: str ("gfpgan" or "RestoreFormer", default: None)
-                - preprocess: str ("crop", "resize", "full", default: "crop")
-                - still: bool (default: False)
+                - preprocess: str ("crop", "resize", "full", default: "full")
+                - still: bool (default: True)
                 - size: int (256 or 512, default: 256)
                 
         Returns:
@@ -94,8 +94,8 @@ class SadTalkerProvider(BaseLipSyncProvider):
         pose_style = opts.get("pose_style", 0)
         expression_scale = opts.get("expression_scale", 1.0)
         enhancer = opts.get("enhancer", None)
-        preprocess = opts.get("preprocess", "crop")
-        still = opts.get("still", False)
+        preprocess = opts.get("preprocess", "full")
+        still = opts.get("still", True)
         size = opts.get("size", 256)
         
         # Generate output path if not provided
@@ -194,12 +194,38 @@ class SadTalkerProvider(BaseLipSyncProvider):
                 }
             }
         
-        # Find the output file (SadTalker creates timestamped output)
-        # Look for the most recent .mp4 file in the output directory
-        output_files = sorted(output_dir.glob("*.mp4"), key=os.path.getmtime, reverse=True)
+        # SadTalker inference.py saves output as: result_dir/YYYY_MM_DD_HH.MM.SS.mp4
+        # It creates a temp folder, generates videos inside, then moves the final result
+        # out and names it with the timestamp. The _full.mp4 logic happens inside
+        # animate_from_coeff.generate() which returns the correct path that gets moved.
+        #
+        # We need to find the most recently created .mp4 file directly in output_dir
+        # (not in subdirectories, since those are temp folders that get deleted)
+        
+        output_files = sorted(
+            [f for f in output_dir.glob("*.mp4") if f.is_file()],
+            key=os.path.getmtime, 
+            reverse=True
+        )
+        
+        logger.info(f"Found output files: {[str(f) for f in output_files[:5]]}")
         
         if output_files:
             actual_output = output_files[0]
+            logger.info(f"Using output file: {actual_output}")
+            
+            # Check video dimensions to verify it's full body
+            try:
+                import subprocess as sp
+                probe = sp.run(
+                    ["ffprobe", "-v", "error", "-select_streams", "v:0", 
+                     "-show_entries", "stream=width,height", "-of", "csv=s=x:p=0", 
+                     str(actual_output)],
+                    capture_output=True, text=True
+                )
+                logger.info(f"Output video dimensions: {probe.stdout.strip()}")
+            except Exception:
+                pass
             
             # If the output path is different, rename it
             if str(actual_output) != output_path:

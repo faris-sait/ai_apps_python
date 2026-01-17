@@ -122,6 +122,8 @@ def run_musetalk(
             "--version", version,
             "--fps", str(fps),
         ]
+        if job_id:
+            cmd.extend(["--job_id", job_id])
         
         try:
             # increase timeout to 1 hour (may take long to load models)
@@ -139,16 +141,15 @@ def run_musetalk(
             error_msg = raw_stderr if raw_stderr else raw_stdout
             return {"success": False, "output_path": None, "message": f"MuseTalk failed: {error_msg[:1000]}", "raw_stdout": raw_stdout, "raw_stderr": raw_stderr}
         
-        # MuseTalk generates output as: output_dir/version/videoname_audioname.mp4
-        # We'll move it to the final output path (using job_id if available)
-        video_name = Path(input_path).stem
-        audio_name = Path(audio_path).stem
-        temp_output = Path(output_path).parent / version / f"{video_name}_{audio_name}.mp4"
-        
-        # Use job_id in final filename if available, otherwise use video_audio names
+        # MuseTalk generates output as: output_dir/version/{job_id}.mp4 or {videoname}_{audioname}.mp4
+        # We'll move it to the final output path
         if job_id:
+            temp_output = Path(output_path).parent / version / f"{job_id}.mp4"
             final_output = Path(output_path).parent / f"{job_id}.mp4"
         else:
+            video_name = Path(input_path).stem
+            audio_name = Path(audio_path).stem
+            temp_output = Path(output_path).parent / version / f"{video_name}_{audio_name}.mp4"
             final_output = Path(output_path).parent / f"{video_name}_{audio_name}.mp4"
         
         # Check if output exists in version subfolder
