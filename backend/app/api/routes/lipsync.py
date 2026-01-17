@@ -325,6 +325,31 @@ async def list_available_models() -> dict:
     }
 
 
+@router.get("/r2/files")
+async def list_r2_files(prefix: str = "AI_video/") -> dict:
+    """
+    List available files in R2 storage.
+    
+    - **prefix**: Folder prefix to filter by (default: AI_video/)
+    
+    Returns list of files with their keys and metadata.
+    Files can be used as input paths with r2:// prefix or AI_video/ prefix.
+    """
+    try:
+        from app.services.r2_storage import list_r2_files as r2_list_files
+        files = r2_list_files(prefix)
+        return {
+            "files": files,
+            "count": len(files),
+            "prefix": prefix,
+            "usage_hint": "Use file keys as input paths, e.g., 'AI_video/video.mp4' or 'r2://AI_video/video.mp4'"
+        }
+    except ImportError:
+        raise HTTPException(status_code=503, detail="R2 storage not configured")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to list R2 files: {str(e)}")
+
+
 @router.delete("/job/{job_id}")
 async def cancel_job(job_id: str) -> dict:
     """
@@ -407,6 +432,15 @@ except ImportError:
     def db_get_job_logs(job_id): return []
 
 
+# Import R2 storage service
+try:
+    from app.services.r2_storage import temp_r2_files, is_r2_path, upload_to_r2
+    R2_AVAILABLE = True
+except ImportError:
+    R2_AVAILABLE = False
+    def is_r2_path(path): return False
+
+
 # Import provider runners (from root-level lipsync_api.py)
 try:
     from lipsync_api import run_musetalk, run_sadtalker, LipSyncMode
@@ -421,6 +455,51 @@ except ImportError:
     
     def run_sadtalker(input_path, audio_path, output_path, options):
         return {"success": False, "message": "SadTalker not configured"}
+
+
+def _run_lipsync_with_r2(job_id: str, request: LipSyncRequest, input_path: str, audio_path: str, options: dict) -> dict:
+    """
+    Run lipsync processing, downloading R2 files to temp if needed.
+    Temp files are automatically cleaned up after processing.
+    """
+    # Check if any paths are R2 paths
+    input_is_r2 = is_r2_path(input_path)
+    audio_is_r2 = is_r2_path(audio_path)
+    
+    if R2_AVAILABLE and (input_is_r2 or audio_is_r2):
+        # Use temp directory for R2 files
+        with temp_r2_files(prefix=f"lipsync_{job_id}_") as temp:
+            # Download R2 files to temp, or use local paths as-is
+            local_input = temp.get_local_path(input_path)
+            local_audio = temp.get_local_path(audio_path)
+            
+            # Run the provider with local paths
+            if request.provider == LipSyncProvider.MUSETALK:
+                result = run_musetalk(local_input, local_audio, request.output_path, options)
+            elif request.provider == LipSyncProvider.SADTALKER:
+                result = run_sadtalker(local_input, local_audio, request.output_path, options)
+            else:
+                result = {"success": False, "message": f"Unknown provider: {request.provider}"}
+            
+            # If successful and output should go to R2, upload it
+            if result.get("success") and result.get("output_path"):
+                output_path = result["output_path"]
+                # Optionally upload output to R2
+                if request.output_path and is_r2_path(request.output_path):
+                    r2_key = request.output_path.replace("r2://", "")
+                    upload_to_r2(output_path, r2_key)
+                    result["r2_output_key"] = r2_key
+            
+            return result
+            # Temp files automatically cleaned up here
+    else:
+        # No R2 paths, run directly with local files
+        if request.provider == LipSyncProvider.MUSETALK:
+            return run_musetalk(input_path, audio_path, request.output_path, options)
+        elif request.provider == LipSyncProvider.SADTALKER:
+            return run_sadtalker(input_path, audio_path, request.output_path, options)
+        else:
+            return {"success": False, "message": f"Unknown provider: {request.provider}"}
 
 
 async def _run_background_job(job_id: str, request: LipSyncRequest) -> None:
@@ -442,13 +521,15 @@ async def _run_background_job(job_id: str, request: LipSyncRequest) -> None:
     options["job_id"] = job_id  # Add job_id for unique output paths
     
     try:
-        # Run provider
-        if request.provider == LipSyncProvider.MUSETALK:
-            result = await asyncio.to_thread(run_musetalk, input_path, request.audio_path, request.output_path, options)
-        elif request.provider == LipSyncProvider.SADTALKER:
-            result = await asyncio.to_thread(run_sadtalker, input_path, request.audio_path, request.output_path, options)
-        else:
-            result = {"success": False, "message": f"Unknown provider: {request.provider}"}
+        # Run provider (with R2 support)
+        result = await asyncio.to_thread(
+            _run_lipsync_with_r2, 
+            job_id, 
+            request, 
+            input_path, 
+            request.audio_path, 
+            options
+        )
         
         job.finished_at = datetime.utcnow()
         job.message = result.get("message")
