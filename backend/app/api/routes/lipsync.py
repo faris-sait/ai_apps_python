@@ -7,6 +7,7 @@ Supported libraries can include: Wav2Lip, SadTalker, VideoReTalking, MuseTalk, e
 
 import asyncio
 import json
+import os
 import random
 import string
 import uuid
@@ -533,8 +534,26 @@ async def _run_background_job(job_id: str, request: LipSyncRequest) -> None:
         
         job.finished_at = datetime.utcnow()
         job.message = result.get("message")
-        job.metadata = result.get("metadata")
+        job.metadata = result.get("metadata") or {}
         job.output_path = result.get("output_path")
+        
+        # Upload output to R2 and delete local file
+        if result.get("success") and result.get("output_path") and R2_AVAILABLE:
+            local_output = result["output_path"]
+            if Path(local_output).exists():
+                # Upload to R2 output folder
+                r2_output_key = f"AI_video/output/{job_id}.mp4"
+                try:
+                    upload_to_r2(local_output, r2_output_key)
+                    job.metadata["r2_output_key"] = r2_output_key
+                    job.metadata["r2_output_url"] = f"https://{os.getenv('R2_BUCKET_NAME')}.{os.getenv('CLOUDFLARE_ACCOUNT_ID')}.r2.cloudflarestorage.com/{r2_output_key}"
+                    
+                    # Delete local output file
+                    Path(local_output).unlink()
+                    job.message = "MuseTalk completed - output uploaded to R2"
+                except Exception as upload_err:
+                    # Keep local file if R2 upload fails
+                    job.metadata["r2_upload_error"] = str(upload_err)
         
         # Write logs to file
         logs_dir = Path(settings.UPLOAD_DIR).parent / "job_logs"
